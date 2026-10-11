@@ -401,6 +401,47 @@ async def test_interruption_without_guaranteed_next_model_rejects_input(
 
 
 @pytest.mark.asyncio
+async def test_completed_stop_tool_sibling_rejects_input() -> None:
+    completed_calls: list[str] = []
+
+    @function_tool
+    def finish(value: str) -> str:
+        completed_calls.append(value)
+        return f"finished:{value}"
+
+    @function_tool(needs_approval=True)
+    def protected_tool(value: str) -> str:
+        return value
+
+    model = ScriptedModel(
+        steps=[
+            [
+                get_function_tool_call("finish", '{"value":"one"}', call_id="call-finish"),
+                get_function_tool_call(
+                    "protected_tool",
+                    '{"value":"two"}',
+                    call_id="call-protected",
+                ),
+            ]
+        ]
+    )
+    agent = Agent(
+        name="assistant",
+        model=model,
+        tools=[finish, protected_tool],
+        tool_use_behavior={"stop_at_tool_names": ["finish"]},
+    )
+    interrupted = await Runner.run(agent, "Initial request")
+    state = interrupted.to_state()
+
+    assert completed_calls == ["one"]
+    before = state.to_json()
+    with pytest.raises(UserError, match="tool result may end the run"):
+        state.add_input("Late input")
+    assert state.to_json() == before
+
+
+@pytest.mark.asyncio
 async def test_pending_input_guardrail_trip_keeps_input_recoverable() -> None:
     model, agent, state, _calls = await _make_after_turn_state()
     guarded_inputs: list[list[TResponseInputItem]] = []
